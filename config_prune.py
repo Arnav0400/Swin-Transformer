@@ -19,7 +19,7 @@ _C.BASE = ['']
 # -----------------------------------------------------------------------------
 _C.DATA = CN()
 # Batch size for a single GPU, could be overwritten by command line argument
-_C.DATA.BATCH_SIZE = 256
+_C.DATA.BATCH_SIZE = 128
 # Path to dataset, could be overwritten by command line argument
 _C.DATA.DATA_PATH = '../imagenet/'
 # Dataset name
@@ -91,7 +91,7 @@ _C.MODEL.SWIN_MLP.PATCH_NORM = True
 _C.TRAIN = CN()
 _C.TRAIN.START_EPOCH = 0
 _C.TRAIN.EPOCHS = 50
-_C.TRAIN.WARMUP_EPOCHS = 20
+_C.TRAIN.WARMUP_EPOCHS = 0
 _C.TRAIN.WEIGHT_DECAY = 1e-3
 _C.TRAIN.BASE_LR = 5e-4
 _C.TRAIN.WARMUP_LR = 5e-7
@@ -111,7 +111,7 @@ _C.TRAIN.USE_CHECKPOINT = False
 _C.TRAIN.LR_SCHEDULER = CN()
 _C.TRAIN.LR_SCHEDULER.NAME = 'none'
 # Epoch interval to decay LR, used in StepLRScheduler
-_C.TRAIN.LR_SCHEDULER.DECAY_EPOCHS = 30
+_C.TRAIN.LR_SCHEDULER.DECAY_EPOCHS = 0
 # LR decay rate, used in StepLRScheduler
 _C.TRAIN.LR_SCHEDULER.DECAY_RATE = 0.1
 
@@ -166,7 +166,7 @@ _C.TEST.CROP = True
 # overwritten by command line argument
 _C.AMP_OPT_LEVEL = ''
 # Path to output folder, overwritten by command line argument
-_C.OUTPUT = ''
+_C.OUTPUT = 'exps/trial'
 # Tag of experiment, overwritten by command line argument
 _C.TAG = 'default'
 # Frequency to save checkpoint
@@ -186,11 +186,11 @@ _C.LOCAL_RANK = 0
 # Pruning settings
 # -----------------------------------------------------------------------------
 # Attention sparsity weight
-_C.W1 = 1e-4
+_C.W1 = 2e-4
 # MLP sparsity weight
-_C.W2 = 1e-4
+_C.W2 = 4e-5
 # Pretrained model path
-_C.PRETRAINED_PATH = ''
+_C.PRETRAINED_PATH = 'exps/swin_tiny_patch4_window7_224.pth'
 
 
 def _update_config_from_file(config, cfg_file):
