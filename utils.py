@@ -44,12 +44,19 @@ def load_checkpoint(config, model, optimizer, lr_scheduler, logger):
 
 
 def save_checkpoint(config, epoch, model, max_accuracy, optimizer, lr_scheduler, logger):
-    save_state = {'model': model.state_dict(),
-                  'optimizer': optimizer.state_dict(),
-                  'lr_scheduler': lr_scheduler.state_dict(),
-                  'max_accuracy': max_accuracy,
-                  'epoch': epoch,
-                  'config': config}
+    if lr_scheduler is not None:
+        save_state = {'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'lr_scheduler': lr_scheduler.state_dict(),
+                    'max_accuracy': max_accuracy,
+                    'epoch': epoch,
+                    'config': config}
+    else:
+        save_state = {'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'max_accuracy': max_accuracy,
+                    'epoch': epoch,
+                    'config': config}
     if config.AMP_OPT_LEVEL != "O0":
         save_state['amp'] = amp.state_dict()
 
@@ -90,3 +97,16 @@ def reduce_tensor(tensor):
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
     rt /= dist.get_world_size()
     return rt
+
+class PruningLoss(torch.nn.Module):
+    def __init__(self, base_criterion, device, attn_w=0.0001, mlp_w=0.0001):
+        super().__init__()
+        self.base_criterion = base_criterion
+        self.w1 = attn_w
+        self.w2 = mlp_w
+        self.device = device
+
+    def forward(self, inputs, outputs, labels, model):
+        base_loss = self.base_criterion(inputs, outputs, labels)
+        sparsity_loss_attn, sparsity_loss_mlp = model.module.get_sparsity_loss(self.device)
+        return  base_loss + self.w1*sparsity_loss_attn + self.w2*sparsity_loss_mlp

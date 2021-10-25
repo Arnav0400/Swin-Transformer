@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from .base_model import BaseModel
 
 
 class Mlp(nn.Module):
@@ -29,6 +30,52 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+class PrunableMlp(Mlp):
+    def __init__(self, mlp_module):
+        super().__init__(mlp_module.fc1.in_features, mlp_module.fc1.out_features, mlp_module.fc2.out_features, act_layer=nn.GELU, drop=mlp_module.drop.p)
+        self.is_pruned = False
+        self.num_gates = mlp_module.fc1.out_features
+        self.zeta = nn.Parameter(torch.ones(1, 1, self.num_gates))
+        self.pruned_zeta = torch.ones_like(self.zeta)  
+    
+    def forward(self, x):
+        z = self.pruned_zeta if self.is_pruned else self.get_zeta()
+        x = self.fc1(x)
+        x = self.act(x)
+        x *= z
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+    
+    def get_zeta(self):
+        return self.zeta
+    
+    def prune(self, threshold):
+        self.is_pruned = True
+        self.pruned_zeta = (self.get_zeta()>=threshold).float()
+        self.zeta.requires_grad = False
+
+    def unprune(self):
+        self.is_pruned = False
+        self.zeta.requires_grad = True
+
+    def get_params_count(self):
+        dim1 = self.fc1.in_features
+        dim2 = self.fc1.out_features
+        active_dim2 = self.pruned_zeta.sum().data
+        total_params = 2*(dim1*dim2) + dim1 + dim2
+        active_params = 2*(dim1*active_dim2) + dim1 + active_dim2
+        return total_params, active_params
+    
+    def prune_flops(self, num_patches):
+        total_params, active_params = self.get_params_count()
+        return total_params*num_patches, active_params*num_patches
+
+    @staticmethod
+    def from_mlp(mlp_module):
+        mlp_module = PrunableMlp(mlp_module)
+        return mlp_module
 
 def window_partition(x, window_size):
     """
@@ -159,6 +206,127 @@ class WindowAttention(nn.Module):
         flops += N * self.dim * self.dim
         return flops
 
+class PrunableWindowAttention(WindowAttention):
+    def __init__(self, attn_module):
+        super().__init__(attn_module.dim, attn_module.window_size, attn_module.num_heads, True, attn_module.scale, attn_module.attn_drop.p, attn_module.proj_drop.p)
+        self.is_pruned = False
+        self.num_gates = attn_module.qkv.in_features // self.num_heads
+        self.zeta = nn.Parameter(torch.ones(1, 1, self.num_heads, 1, self.num_gates))
+        self.pruned_zeta = torch.ones_like(self.zeta)
+
+    def forward(self, x, mask=None):
+        """
+        Args:
+            x: input features with shape of (num_windows*B, N, C)
+            mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
+        """
+        B_, N, C = x.shape
+        z = self.pruned_zeta if self.is_pruned else self.zeta
+        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        qkv *= z
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+
+        q = q * self.scale
+        attn = (q @ k.transpose(-2, -1))
+
+        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
+            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
+        attn = attn + relative_position_bias.unsqueeze(0)
+
+        if mask is not None:
+            nW = mask.shape[0]
+            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+            attn = attn.view(-1, self.num_heads, N, N)
+            attn = self.softmax(attn)
+        else:
+            attn = self.softmax(attn)
+
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+    
+    def get_zeta(self):
+        return self.zeta
+    
+    def prune(self, threshold_attn):
+        self.is_pruned = True
+        self.pruned_zeta = (self.zeta>=threshold_attn).float()
+        self.zeta.requires_grad = False
+
+    def unprune(self):
+        self.is_pruned = False
+        self.zeta.requires_grad = True
+        self.patch_zeta.requires_grad = True
+
+    def get_params_count(self):
+        dim = self.qkv.in_features
+        active = self.pruned_zeta.sum().data
+        if self.zeta.shape[-1] == 1:
+            active*=self.num_gates
+        elif self.zeta.shape[2] == 1:
+            active*=self.num_heads
+        total_params = dim*dim*3 + dim*3
+        total_params += dim*dim + dim
+        active_params = dim*active*3 + active*3
+        active_params += active*dim +dim
+        return total_params, active_params
+    
+    def prune_flops(self, num_patches):
+        H = self.num_heads
+        N = num_patches
+        n = num_patches
+        d = self.num_gates
+        sd = self.pruned_zeta.sum().data
+        total_flops = N * (H*d * (3*H*d)) + 3*N*H*d #linear: qkv
+        total_flops += H*N*d*N + H*N*N #q@k
+        total_flops += 5*H*N*N #softmax
+        total_flops += H*N*N*d #attn@v
+        total_flops += N * (H*d * (H*d)) + N*H*d #linear: proj
+        
+        active_flops = n * (H*d * (3*sd)) + 3*n*sd #linear: qkv
+        active_flops += n*n*sd + H*n*n #q@k
+        active_flops += 5*H*n*n #softmax
+        active_flops += n*n*sd #attn@v
+        active_flops += n * (sd * (H*d)) + n*H*d #linear: proj
+        return total_flops, active_flops
+
+    @staticmethod
+    def from_attn(attn_module):
+        attn_module = PrunableWindowAttention(attn_module)
+        return attn_module
+
+class ModuleInjection:
+    pruning_method = 'full'
+    prunable_modules = []
+
+    @staticmethod
+    def make_prunable_attn(attn_module):
+        """Make a attn_module prunable.
+        :param attn_module: A Attention module
+        :return: a attn_module that can be trained to
+        """
+        if ModuleInjection.pruning_method == 'full':
+            return attn_module
+        attn_module = PrunableWindowAttention.from_attn(attn_module)
+        ModuleInjection.prunable_modules.append(attn_module)
+        return attn_module
+
+    @staticmethod
+    def make_prunable_mlp(mlp_module):
+        """Make a mlp_module prunable.
+        :param mlp_module: A MLP module
+        :return: a mlp_module that can be trained to
+        """
+        if ModuleInjection.pruning_method == 'full':
+            return mlp_module
+        mlp_module = PrunableMlp.from_mlp(mlp_module)
+        ModuleInjection.prunable_modules.append(mlp_module)
+        return mlp_module
+
 
 class SwinTransformerBlock(nn.Module):
     r""" Swin Transformer Block.
@@ -199,11 +367,13 @@ class SwinTransformerBlock(nn.Module):
         self.attn = WindowAttention(
             dim, window_size=to_2tuple(self.window_size), num_heads=num_heads,
             qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        self.attn = ModuleInjection.make_prunable_attn(self.attn)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        self.mlp = ModuleInjection.make_prunable_mlp(self.mlp)
 
         if self.shift_size > 0:
             # calculate attention mask for SW-MSA
@@ -286,6 +456,24 @@ class SwinTransformerBlock(nn.Module):
         # norm2
         flops += self.dim * H * W
         return flops
+
+    def prune_flops(self):
+        flops = 0
+        pruned_flops = 0
+        H, W = self.input_resolution
+        # norm1 + norm2
+        flops += 2*self.dim * H * W
+        pruned_flops += 2*self.dim * H * W
+        # W-MSA/SW-MSA
+        nW = H * W / self.window_size / self.window_size
+        attn_flops, attn_pruned_flops = self.attn.get_flops(self.window_size * self.window_size)
+        flops += nW * attn_flops
+        pruned_flops += nW * attn_pruned_flops
+        # mlp
+        mlp_flops, mlp_pruned_flops = self.mlp.get_flops(H * W)
+        flops += mlp_flops
+        pruned_flops += mlp_pruned_flops
+        return flops, pruned_flops
 
 
 class PatchMerging(nn.Module):
@@ -406,6 +594,17 @@ class BasicLayer(nn.Module):
             flops += self.downsample.flops()
         return flops
 
+    def prune_flops(self):
+        flops = 0
+        prune_flops = 0
+        for blk in self.blocks:
+            blk_flops, blk_prune_flops = blk.prune_flops()
+            flops += blk_flops
+            prune_flops += blk_prune_flops
+        if self.downsample is not None:
+            flops += self.downsample.flops()
+        return flops
+
 
 class PatchEmbed(nn.Module):
     r""" Image to Patch Embedding
@@ -455,7 +654,7 @@ class PatchEmbed(nn.Module):
         return flops
 
 
-class SwinTransformer(nn.Module):
+class SwinTransformer(BaseModel):
     r""" Swin Transformer
         A PyTorch impl of : `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows`  -
           https://arxiv.org/pdf/2103.14030
@@ -583,3 +782,18 @@ class SwinTransformer(nn.Module):
         flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
         flops += self.num_features * self.num_classes
         return flops
+
+    def prune_flops(self):
+        flops = 0
+        pruned_flops = 0
+        flops += self.patch_embed.flops()
+        pruned_flops += self.patch_embed.flops()
+        for i, layer in enumerate(self.layers):
+            l_flops, l_pruned_flops = layer.prune_flops()
+            flops += l_flops
+            pruned_flops += l_pruned_flops
+        flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
+        flops += self.num_features * self.num_classes
+        pruned_flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
+        pruned_flops += self.num_features * self.num_classes
+        return flops, pruned_flops

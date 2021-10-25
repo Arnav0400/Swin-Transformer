@@ -7,10 +7,13 @@
 
 from .swin_transformer import SwinTransformer
 from .swin_mlp import SwinMLP
+from .swin_transformer import ModuleInjection
 
 
 def build_model(config):
     model_type = config.MODEL.TYPE
+    ModuleInjection.pruning_method = config.MODEL.METHOD
+    ModuleInjection.prunable_modules = []
     if model_type == 'swin':
         model = SwinTransformer(img_size=config.DATA.IMG_SIZE,
                                 patch_size=config.MODEL.SWIN.PATCH_SIZE,
@@ -45,5 +48,5 @@ def build_model(config):
                         use_checkpoint=config.TRAIN.USE_CHECKPOINT)
     else:
         raise NotImplementedError(f"Unkown model: {model_type}")
-
+    model.prunable_modules = ModuleInjection.prunable_modules
     return model
