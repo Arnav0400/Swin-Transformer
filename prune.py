@@ -57,7 +57,7 @@ def parse_option():
                         help="whether to use gradient checkpointing to save memory")
     parser.add_argument('--amp-opt-level', type=str, default='O0', choices=['O0', 'O1', 'O2'],
                         help='mixed precision opt level, if O0, no amp is used')
-    parser.add_argument('--output', default='output', type=str, metavar='PATH',
+    parser.add_argument('--output', default='exps', type=str, metavar='PATH',
                         help='root of output folder, the full path is <output>/<model_name>/<tag> (default: output)')
     parser.add_argument('--tag', help='tag of experiment')
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
@@ -293,10 +293,7 @@ if __name__ == '__main__':
     seed = config.SEED + dist.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-    cudnn.benchmark = True
-    config.defrost()
-    config.W1/=world_size
-    config.W2/=world_size
+    cudnn.benchmark = True    
 
     # linear scale the learning rate according to total batch size, may not be optimal
     linear_scaled_lr = config.TRAIN.BASE_LR
@@ -304,6 +301,8 @@ if __name__ == '__main__':
         linear_scaled_lr = linear_scaled_lr * config.TRAIN.ACCUMULATION_STEPS
     config.defrost()
     config.TRAIN.BASE_LR = linear_scaled_lr
+    config.W1/=world_size
+    config.W2/=world_size
     config.freeze()
 
     os.makedirs(config.OUTPUT, exist_ok=True)
