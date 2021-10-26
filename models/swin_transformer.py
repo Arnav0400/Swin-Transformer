@@ -466,11 +466,11 @@ class SwinTransformerBlock(nn.Module):
         pruned_flops += 2*self.dim * H * W
         # W-MSA/SW-MSA
         nW = H * W / self.window_size / self.window_size
-        attn_flops, attn_pruned_flops = self.attn.get_flops(self.window_size * self.window_size)
+        attn_flops, attn_pruned_flops = self.attn.prune_flops(self.window_size * self.window_size)
         flops += nW * attn_flops
         pruned_flops += nW * attn_pruned_flops
         # mlp
-        mlp_flops, mlp_pruned_flops = self.mlp.get_flops(H * W)
+        mlp_flops, mlp_pruned_flops = self.mlp.prune_flops(H * W)
         flops += mlp_flops
         pruned_flops += mlp_pruned_flops
         return flops, pruned_flops
@@ -603,7 +603,8 @@ class BasicLayer(nn.Module):
             prune_flops += blk_prune_flops
         if self.downsample is not None:
             flops += self.downsample.flops()
-        return flops
+            prune_flops += self.downsample.flops()
+        return flops, prune_flops
 
 
 class PatchEmbed(nn.Module):
@@ -796,4 +797,4 @@ class SwinTransformer(BaseModel):
         flops += self.num_features * self.num_classes
         pruned_flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
         pruned_flops += self.num_features * self.num_classes
-        return flops, pruned_flops
+        return flops, pruned_flops.item()

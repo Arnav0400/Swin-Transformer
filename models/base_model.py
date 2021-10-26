@@ -79,7 +79,7 @@ class BaseModel(nn.Module):
         plt.show()
         return exactly_zeros, exactly_ones
 
-    def prune(self, Vc_attn, Vc_mlp, Vc_patch, constrain_patch=True):
+    def prune(self, Vc_attn, Vc_mlp):
         """prunes the network to make zeta_t exactly 1 and 0"""
         thresh_attn, thresh_mlp = self.calculate_prune_threshold(Vc_attn, Vc_mlp)
                 
@@ -91,7 +91,7 @@ class BaseModel(nn.Module):
         problem = self.check_abnormality()
         return thresh_attn, thresh_mlp, problem
     
-    def prune_global(self, Vc_attn_mlp, Vc_patch, constrain_patch=True):
+    def prune_global(self, Vc_attn_mlp, Vc_patch):
         """prunes the network to make zeta_t exactly 1 and 0"""
         thresh = self.calculate_global_prune_threshold(Vc_attn_mlp)
                 
@@ -122,10 +122,10 @@ class BaseModel(nn.Module):
         active_channels_mlp = []
         for l_block in self.prunable_modules:
             if hasattr(l_block, 'num_heads'):
-                active_channels_attn.append(l_block.pruned_zeta.numpy())
+                active_channels_attn.append(l_block.pruned_zeta.sum(-1).squeeze().numpy())
             else:
                 active_channels_mlp.append(l_block.pruned_zeta.sum().item())
-        return np.squeeze(np.array(active_channels_attn)), np.array(active_channels_mlp)
+        return np.array(active_channels_attn), np.array(active_channels_mlp)
 
     def get_params(self):
         total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
