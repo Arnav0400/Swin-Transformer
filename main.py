@@ -78,14 +78,19 @@ def main(config):
 
     logger.info(f"Creating model:{config.MODEL.TYPE}/{config.MODEL.NAME}")
     model = build_model(config)
+    if config.PRUNED_PATH:
+        model.load_state_dict(torch.load(config.PRUNED_PATH)['model'], strict=False)
     model.cuda()
     logger.info(str(model))
 
     optimizer = build_optimizer(config, model)
     if config.AMP_OPT_LEVEL != "O0":
         model, optimizer = amp.initialize(model, optimizer, opt_level=config.AMP_OPT_LEVEL)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False, find_unused_parameters=True)
     model_without_ddp = model.module
+    if config.PRUNED_PATH:
+        thresh_attn, thresh_mlp, problem = model.module.prune(config.VC_ATTN, config.VC_MLP)
+        print('Pruning threshold:', thresh_attn, thresh_mlp)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"number of params: {n_parameters}")

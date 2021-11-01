@@ -46,6 +46,8 @@ _C.MODEL = CN()
 _C.MODEL.TYPE = 'swin'
 # Model name
 _C.MODEL.NAME = 'swin_tiny_patch4_window7_224'
+# pruning or full training
+_C.MODEL.METHOD = 'prune'
 # Checkpoint to resume, could be overwritten by command line argument
 _C.MODEL.RESUME = ''
 # Number of classes, overwritten in data preparation
@@ -168,7 +170,7 @@ _C.OUTPUT = ''
 # Tag of experiment, overwritten by command line argument
 _C.TAG = 'default'
 # Frequency to save checkpoint
-_C.SAVE_FREQ = 1
+_C.SAVE_FREQ = 20
 # Frequency to logging info
 _C.PRINT_FREQ = 10
 # Fixed random seed
@@ -180,6 +182,12 @@ _C.THROUGHPUT_MODE = False
 # local rank for DistributedDataParallel, given by command line argument
 _C.LOCAL_RANK = 0
 
+# -----------------------------------------------------------------------------
+# Retraining
+# -----------------------------------------------------------------------------
+_C.PRUNED_PATH = ''
+_C.VC_ATTN = 0.5
+_C.VC_MLP = 0.5
 
 def _update_config_from_file(config, cfg_file):
     config.defrost()
